@@ -1,0 +1,134 @@
+diff --git a/run.py b/run.py
+index 1ede92a..4cfebc8 100644
+--- a/run.py
++++ b/run.py
+@@ -172,6 +172,24 @@ def get_argument_parser():
+         action="store_true",
+         help="Whether to save hidden states from the model.",
+     )
++    # [reproduction patch] seed, vllm switch, control arms
++    parser.add_argument("--seed", type=int, default=None, help="Global RNG seed.")
++    parser.add_argument(
++        "--q_stride", type=int, default=1, help="Ask every k-th question only (compute)."
++    )
++    parser.add_argument(
++        "--no_vllm",
++        action="store_true",
++        help="Use the HF transformers path even for direct / prompt_engineering.",
++    )
++    parser.add_argument(
++        "--vector_control",
++        type=str,
++        choices=["zero", "random"],
++        default=None,
++        help="Control arm: replace every loaded demographic vector by zeros (noise-only) "
++        "or by a random direction of the same norm.",
++    )
+     parser.add_argument(
+         "--reverse",
+         action="store_true",
+@@ -200,6 +218,8 @@ def validate_args(args):
+         "vector_q_codes",
+     ]
+ 
++    if args.vector_control and not is_demographic_vectors_method:
++        raise ValueError("--vector_control needs demographic_vectors")
+     if is_demographic_vectors_method:
+         for name in demographic_vector_required:
+             if getattr(args, name) is None:
+@@ -257,6 +277,21 @@ def load_demographic_vectors_for_agent(agent_answers, demographic_vectors_dir, v
+     return loaded_vectors
+ 
+ 
++def apply_vector_control(vectors, mode, seed):
++    """[reproduction patch] zero / random-direction control with identical layers and norms."""
++    out = []
++    for vec, layer_idx in vectors:
++        if mode == "zero":
++            out.append((torch.zeros_like(vec), layer_idx))
++        else:
++            key = int(vec.double().abs().sum().item() * 1e6) % (2**31)
++            g = torch.Generator().manual_seed((seed or 0) * 1000003 + key)
++            r = torch.randn(vec.shape, generator=g, dtype=torch.float32)
++            r = r / r.norm() * vec.float().norm()
++            out.append((r.to(vec.dtype), layer_idx))
++    return out
++
++
+ def load_value_vector(value_vectors_dir):
+     lang = random.choice(LANGS)
+     vector_file = os.path.join(value_vectors_dir, f"language_embedding_{lang}.pt")
+@@ -316,6 +351,11 @@ def process_agents(agents, questions_map, args):
+         param_dir("coef", args.coef),
+         param_dir("noise", args.noise_std),
+         param_dir("steer", args.steering_type),
++        # [reproduction patch] keep seeds / control arms apart
++        f"ctrl_{args.vector_control}" if args.vector_control else None,
++        f"seed_{args.seed}" if args.seed is not None else None,
++        "novllm" if args.no_vllm else None,
++        f"qstride_{args.q_stride}" if args.q_stride != 1 else None,
+     ]
+     output_path = os.path.join(*[p for p in path_parts if p is not None])
+     os.makedirs(output_path, exist_ok=True)
+@@ -409,7 +449,7 @@ def process_single_agent(
+         agent_profile = profile_prompt_map[lang] + "\n" + agent_profile
+ 
+     if failed_qids is None:
+-        failed_qids = list(questions.keys())
++        failed_qids = list(questions.keys())[:: args.q_stride]  # [reproduction patch]
+ 
+     agent_profile_full = system_prompt + "\n" + agent_profile
+ 
+@@ -424,6 +464,8 @@ def process_single_agent(
+         vector = load_demographic_vectors_for_agent(
+             agent_answers, args.demographic_vectors_dir, args.vector_q_codes
+         )
++        if args.vector_control:
++            vector = apply_vector_control(vector, args.vector_control, args.seed)
+ 
+     value_vector = None
+     if "value_vector" in args.method:
+@@ -480,6 +522,7 @@ def process_single_agent(
+                     args.save_hidden_states,
+                     vector,
+                     value_vector,
++                    use_vllm_if_possible=not args.no_vllm,
+                     **optional_args,
+                 )
+                 raw_output = res["output"].strip()
+@@ -536,6 +579,10 @@ def main():
+     args = parser.parse_args()
+     print(args)
+     validate_args(args)
++    if args.seed is not None:  # [reproduction patch]
++        random.seed(args.seed)
++        torch.manual_seed(args.seed)
++        os.environ["PSII_SEED"] = str(args.seed)
+ 
+     if "prompt_engineering" in args.method:
+         if args.use_stories:
+diff --git a/utils.py b/utils.py
+index 81c832f..bfe86a2 100644
+--- a/utils.py
++++ b/utils.py
+@@ -43,7 +43,8 @@ def get_model_path(model_name):
+     elif model_name == "mistral-24b":
+         return ""
+     elif model_name == "llama3.1-8b":
+-        return ""
++        # [reproduction patch] local model path via env var
++        return os.environ.get("PSII_LLAMA_PATH", "meta-llama/Llama-3.1-8B-Instruct")
+     else:
+         raise ValueError(f"{model_name} not found")
+ 
+@@ -108,6 +109,10 @@ def get_vllm_model(
+         model=model_path,
+         trust_remote_code=True,
+         dtype="float16",
++        # [reproduction patch] seed, memory share and context cap via env vars
++        seed=int(os.environ.get("PSII_SEED", "0")),
++        gpu_memory_utilization=float(os.environ.get("PSII_VLLM_GPU_UTIL", "0.9")),
++        max_model_len=int(os.environ.get("PSII_VLLM_MAX_LEN", "8192")),
+     )
+ 
+     tokenizer = AutoTokenizer.from_pretrained(

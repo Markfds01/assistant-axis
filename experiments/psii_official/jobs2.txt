@@ -1,0 +1,20 @@
+# revised priority after the first results (queue 2); in flight at switch time: random_value 0, demo_only 0, random 0, direct 2
+no_noise 0
+no_demo 0
+noise_only_multi 0
+pe_multi 0
+no_profile 0
+layer70 0
+psii 1
+noise_only_value 1
+noise_only 1
+psii 2
+noise_only_value 2
+no_value 1
+noise_only 2
+random 1
+random_value 1
+noise_only_multi 1
+pe_multi 1
+pe_novllm 0
+random_nonoise 0
