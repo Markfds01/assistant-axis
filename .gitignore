@@ -45,3 +45,7 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
+
+# PSII: private data and results
+experiments/psii_*/results/
+experiments/psii_*/data/

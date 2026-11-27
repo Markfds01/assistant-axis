@@ -1,0 +1,7 @@
+# queue 3 (after pe_multi s0 was found invalid: vllm could not start next to two HF jobs; arm now uses --no_vllm)
+pe_multi 0
+random_value 1
+pe_multi 1
+random 1
+pe_novllm 0
+noise_only_multi 1
